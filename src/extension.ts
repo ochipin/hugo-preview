@@ -13,6 +13,7 @@ let previewPanel: vscode.WebviewPanel | undefined;
 let hugoStatusItem: vscode.StatusBarItem;
 let hugoServerProcess: ChildProcessWithoutNullStreams | null = null;
 
+const localize = vscode.l10n.t;
 const HUGO_SERVER_URL = "http://localhost:1313";
 
 export function activate(context: vscode.ExtensionContext) {
@@ -25,11 +26,11 @@ export function activate(context: vscode.ExtensionContext) {
 
   // 起動時に表示更新
   // 起動時に現在のフォルダがHugoプロジェクトかチェックして表示更新
-    const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    if (workspace && isHugoProject(workspace)) {
-      updateHugoStatus(context).catch(() => {});
-      checkHugoUpdateOnStartup(context).catch(() => {});
-    }
+  const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (workspace && isHugoProject(workspace)) {
+    updateHugoStatus(context).catch(() => {});
+    checkHugoUpdateOnStartup(context).catch(() => {});
+  }
 
   context.subscriptions.push(
     vscode.commands.registerCommand("hugoPreview.open", async () => {
@@ -72,17 +73,17 @@ export function deactivate() {}
 async function openPreview(context: vscode.ExtensionContext) {
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
-    throw new Error("Markdown を開いてから実行して。");
+    throw new Error(localize("error.noMarkdown"));
   }
 
   const doc = editor.document;
   if (doc.languageId !== "markdown") {
-    throw new Error("Markdown ファイルで実行して。");
+    throw new Error(localize("error.notMarkdown"));
   }
 
   const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!workspace) {
-    throw new Error("ワークスペースを開いてから実行して。");
+    throw new Error(localize("error.noWorkspace"));
   }
 
   const hugo = await ensureHugo(context, false);
@@ -105,7 +106,7 @@ async function openPreview(context: vscode.ExtensionContext) {
   const norm = (p: string) => path.resolve(p);
 
   if (!norm(docPath).startsWith(norm(contentRoot) + path.sep) && norm(docPath) !== norm(contentRoot)) {
-    throw new Error("content/ ディレクトリ配下の Markdown を開いてください。");
+    throw new Error(localize("error.notContent"));
   }
 
   // content からの相対パスをそのまま再現してコピー
@@ -138,16 +139,10 @@ async function openPreview(context: vscode.ExtensionContext) {
   const sectionDir = path.dirname(relPath);
 
   // Hugo's default: <section>/<slug>/index.html
-  // (Note: branch bundles "name/index.md" are not handled here; add later if needed)
   const htmlPath = path.join(outDir, sectionDir, slug, "index.html");
 
   if (!fs.existsSync(htmlPath)) {
-    // (optional) extra hint for debugging
-    throw new Error(
-      `HTML が生成されなかった。\n` +
-      `期待パス: ${htmlPath}\n` +
-      `※ permalink / _index.md / bundle 構成を確認して。`
-    );
+    throw new Error(localize("error.htmlNotGenerated", htmlPath));
   }
 
   let html = fs.readFileSync(htmlPath, "utf8");
@@ -250,12 +245,12 @@ async function ensureHugo(context: vscode.ExtensionContext, forceInstall: boolea
   if (userPath) {
     const ok = await checkHugo(userPath);
     if (ok) {return userPath;}
-    throw new Error(`hugoPreview.hugoPath が無効: ${userPath}`);
+    throw new Error(localize("error.hugoInvalid", userPath));
   }
 
   // 2) PATH
   if (!forceInstall) {
-    if (await checkHugo("hugo")) {return "hugo";}
+    if (await checkHugo("hugo")) { return "hugo"; }
   }
 
   // 3) installed in global storage
@@ -267,20 +262,28 @@ async function ensureHugo(context: vscode.ExtensionContext, forceInstall: boolea
 
   // 4) install
   if (!autoDownload && !forceInstall) {
-    throw new Error("Hugo が見つからない。設定で hugoPath を指定するか autoDownload を有効にして。");
+    throw new Error(localize("error.hugoNotFound"));
   }
 
+  const installLabel = localize("button.install");
+  const cancelLabel  = localize("button.cancel");
+
   const choice = await vscode.window.showInformationMessage(
-    "Hugo が見つかりません。拡張が自動でインストールしますか？",
-    "インストール",
-    "キャンセル"
+    localize("info.confirmInstall"),
+    installLabel,
+    cancelLabel
   );
-  if (choice !== "インストール") {throw new Error("キャンセルした。");}
+
+  if (choice !== installLabel) {
+    throw new Error(localize("error.installCanceled"));
+  }
 
   await installHugo(context);
-  if (fs.existsSync(hugoBin) && (await checkHugo(hugoBin))) {return hugoBin;}
+  if (fs.existsSync(hugoBin) && (await checkHugo(hugoBin))) {
+    return hugoBin;
+  }
 
-  throw new Error("Hugo のインストールに失敗した。ログを確認して。");
+  throw new Error(localize("error.installFailed"));
 }
 
 function checkHugo(cmd: string): Promise<boolean> {
@@ -320,7 +323,9 @@ async function installHugo(context: vscode.ExtensionContext) {
     } catch (e) {
       // ネットワークエラーなどで取得できない場合の最終フォールバック
       version = "0.152.2";
-      vscode.window.showWarningMessage("最新バージョンの取得に失敗したため、デフォルトバージョンをインストールします。");
+      vscode.window.showWarningMessage(
+        vscode.l10n.t("warn.hugoLatestVersionFailed")
+      );
     }
   }
 
@@ -353,13 +358,12 @@ async function installHugoInternal(context: vscode.ExtensionContext, version: st
     : `${flavor}_${version}_${platform}-${arch}.tar.gz`;
 
   const url = base + fileName;
-
   const archivePath = path.join(tmpDir, fileName);
 
   await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
-      title: `Downloading Hugo v${version} (${platform}-${arch})`,
+      title: localize("progress.hugoDownloading", version, platform, arch),
       cancellable: false
     },
     async () => {
@@ -379,7 +383,7 @@ async function installHugoInternal(context: vscode.ExtensionContext, version: st
       // Find hugo binary inside extract dir
       const found = findHugoBinary(extractDir, isWin);
       if (!found) {
-        throw new Error(`アーカイブ内に Hugo 実行ファイルが見つからない: ${fileName}`);
+        throw new Error(localize("error.hugoBinaryNotFound", fileName));
       }
 
       fs.copyFileSync(found, binPath);
@@ -397,7 +401,7 @@ async function installHugoInternal(context: vscode.ExtensionContext, version: st
   // Final sanity check
   const ok = await checkHugo(binPath);
   if (!ok) {
-    throw new Error("インストールした Hugo が実行できない。");
+    throw new Error(vscode.l10n.t("error.hugoNotExecutable"));
   }
 }
 
@@ -536,13 +540,16 @@ async function checkHugoUpdateOnStartup(context: vscode.ExtensionContext) {
   const latestVer = await getLatestHugoVersion();
   if (!isNewer(latestVer, localVer)) {return;}
 
+  const updateLabel = localize("button.update");
+  const laterLabel  = localize("button.later");
+
   const choice = await vscode.window.showInformationMessage(
-    `Hugo ${latestVer} が利用可能です（現在: ${localVer}）。更新しますか？`,
-    "更新する",
-    "後で"
+    localize("info.hugoUpdateAvailable", latestVer, localVer),
+    updateLabel,
+    laterLabel
   );
 
-  if (choice !== "更新する") {return;}
+  if (choice !== updateLabel) {return;}
 
   await installHugoInternal(
     context,
@@ -550,7 +557,7 @@ async function checkHugoUpdateOnStartup(context: vscode.ExtensionContext) {
     cfg.get<boolean>("useExtended") ?? true
   );
 
-  vscode.window.showInformationMessage(`Hugo を ${latestVer} に更新しました。`);
+  vscode.window.showInformationMessage(localize("info.hugoUpdated", latestVer));
 
   await updateHugoStatus(context);
 }
@@ -622,7 +629,7 @@ async function showHugoQuickPick(context: vscode.ExtensionContext) {
 
 async function startHugoServer(context: vscode.ExtensionContext) {
   if (hugoServerProcess) {
-    vscode.window.showInformationMessage("Hugo server is already running.");
+    vscode.window.showInformationMessage(localize("error.hugoStartServer"));
     return;
   }
 
@@ -655,19 +662,19 @@ async function startHugoServer(context: vscode.ExtensionContext) {
     hugoServerProcess = null;
   });
 
-  vscode.window.showInformationMessage("Hugo server started.");
+  vscode.window.showInformationMessage(localize("info.hugoStartServer"));
 }
 
 function stopHugoServer() {
   if (!hugoServerProcess) {
-    vscode.window.showInformationMessage("Hugo server is not running.");
+    vscode.window.showInformationMessage(localize("error.hugoStopServer"));
     return;
   }
 
   hugoServerProcess.kill();
   hugoServerProcess = null;
 
-  vscode.window.showInformationMessage("Hugo server stopped.");
+  vscode.window.showInformationMessage(localize("info.hugoStopServer"));
 }
 
 function isHugoProject(workspace: string): boolean {
