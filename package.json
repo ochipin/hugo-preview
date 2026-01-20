@@ -1,0 +1,93 @@
+{
+  "name": "hugo-preview",
+  "displayName": "Hugo Preview",
+  "description": "Hugo preview with auto-installed Hugo",
+  "version": "0.0.1",
+  "publisher": "suguru-ochiai",
+  "icon": "media/hugo-icon.png",
+  "engines": {
+    "vscode": "^1.108.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ochipin/hugo-preview.git"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+      "workspaceContains:**/config.toml",
+      "workspaceContains:**/config.yaml",
+      "workspaceContains:**/config.yml",
+      "workspaceContains:**/hugo.toml",
+      "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "hugoPreview.open",
+        "title": "Hugo Preview: Open",
+        "icon": {
+          "light": "media/hugo-dark.svg",
+          "dark": "media/hugo-light.svg"
+        }
+      },
+      {
+        "command": "hugoPreview.showControls",
+        "title": "Hugo: Show controls"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "hugoPreview.open",
+          "when": "resourceLangId == markdown",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "properties": {
+        "hugoPreview.checkUpdateOnStartup": {
+          "type": "boolean",
+          "default": true,
+          "description": "Hugo update"
+        },
+        "hugoPreview.hugoVersion": {
+          "type": "string",
+          "default": "0.152.2",
+          "description": "Hugo default version"
+        },
+        "hugoPreview.useExtended": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use Hugo extended version"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.7",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "@types/vscode": "^1.108.1",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
+    "eslint": "^9.39.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.52.0"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "tar": "^7.5.2"
+  }
+}
