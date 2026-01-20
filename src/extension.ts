@@ -125,7 +125,10 @@ async function openPreview(context: vscode.ExtensionContext) {
     "--contentDir",
     contentDir,
     "--destination",
-    outDir
+    outDir,
+    "--buildDrafts",
+    "--buildFuture",
+    "--buildExpired"
   ]);
 
   // =========================================================
