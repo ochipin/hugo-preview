@@ -13,11 +13,14 @@ let previewPanel: vscode.WebviewPanel | undefined;
 let hugoStatusItem: vscode.StatusBarItem;
 let hugoServerProcess: ChildProcessWithoutNullStreams | null = null;
 let hugoOutput: vscode.OutputChannel;
+let extensionContext: vscode.ExtensionContext;
+let isHugoServerRunning = false;
 
 const localize = vscode.l10n.t;
 const HUGO_SERVER_URL = "http://localhost:1313";
 
 export function activate(context: vscode.ExtensionContext) {
+  extensionContext = context;
   hugoOutput = vscode.window.createOutputChannel("Hugo Preview");
   context.subscriptions.push(hugoOutput);
 
@@ -32,7 +35,7 @@ export function activate(context: vscode.ExtensionContext) {
   // 起動時に現在のフォルダがHugoプロジェクトかチェックして表示更新
   const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (workspace && isHugoProject(workspace)) {
-    updateHugoStatus(context).catch(() => {});
+    updateHugoStatus().catch(() => {});
     checkHugoUpdateOnStartup(context).catch(() => {});
   }
 
@@ -41,7 +44,7 @@ export function activate(context: vscode.ExtensionContext) {
       try {
         await openPreview(context);
         // プレビュー実行後にも更新（PATH/自動DLを考慮）
-        await updateHugoStatus(context);
+        await updateHugoStatus();
       } catch (e: any) {
         vscode.window.showErrorMessage(e?.message ?? String(e));
       }
@@ -53,7 +56,7 @@ export function activate(context: vscode.ExtensionContext) {
       try {
         const hugoPath = await ensureHugo(context, true);
         vscode.window.showInformationMessage(`Hugo installed: ${hugoPath}`);
-        await updateHugoStatus(context);
+        await updateHugoStatus();
       } catch (e: any) {
         vscode.window.showErrorMessage(e?.message ?? String(e));
       }
@@ -68,7 +71,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // 起動時更新チェック（既存）
   checkHugoUpdateOnStartup(context)
-    .then(() => updateHugoStatus(context))
+    .then(() => updateHugoStatus())
     .catch(() => {});
 }
 
@@ -568,35 +571,38 @@ async function checkHugoUpdateOnStartup(context: vscode.ExtensionContext) {
 
   vscode.window.showInformationMessage(localize("info.hugoUpdated", latestVer));
 
-  await updateHugoStatus(context);
+  await updateHugoStatus();
 }
 
-async function updateHugoStatus(context: vscode.ExtensionContext) {
+async function updateHugoStatus() {
   const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 
-  // 1) そもそもHugoプロジェクトでないなら隠して終了
   if (!workspace || !isHugoProject(workspace)) {
     hugoStatusItem.hide();
     return;
   }
 
-  // 2) Hugo本体を探す
-  const hugoPath = await resolveInstalledHugo(context);
+  const hugoPath = await resolveInstalledHugo(extensionContext);
 
   if (!hugoPath) {
-    // Hugoプロジェクトなのに本体がない場合：警告アイコンを表示
     hugoStatusItem.text = `$(warning) Hugo Install Needed`;
     hugoStatusItem.command = "hugoPreview.installHugo";
     hugoStatusItem.show();
     return;
   }
 
-  // 3) Hugoがある場合：バージョンを表示
   const ver = await getLocalHugoVersion(hugoPath);
-  hugoStatusItem.text = `$(rocket) Hugo ${ver || "Detected"}`;
+  const versionText = ver || "Detected";
+
+  // ★ サーバ状態は「見るだけ」
+  hugoStatusItem.text = isHugoServerRunning
+    ? `$(sync~spin) Hugo ${versionText}`
+    : `$(rocket) Hugo ${versionText}`;
+
   hugoStatusItem.command = "hugoPreview.showControls";
   hugoStatusItem.show();
 }
+
 
 async function showHugoQuickPick(context: vscode.ExtensionContext) {
   type Action = "start" | "stop" | "restart" | "open";
@@ -716,6 +722,8 @@ async function startHugoServer(context: vscode.ExtensionContext) {
 
     if (!started && /Web Server is available/i.test(msg)) {
       started = true;
+      isHugoServerRunning = true;
+      updateHugoStatus();
       vscode.window.showInformationMessage(
         localize("info.hugoStartServer")
       );
@@ -754,7 +762,8 @@ async function startHugoServer(context: vscode.ExtensionContext) {
 
   hugoServerProcess.on("exit", (code, signal) => {
     hugoServerProcess = null;
-
+    isHugoServerRunning = false;
+    updateHugoStatus();
     if ((code ?? 0) !== 0 || hasErrorLine) {
       hugoOutput.appendLine("");
       hugoOutput.appendLine(
@@ -799,6 +808,8 @@ function stopHugoServer(): Promise<void> {
     hugoServerProcess = null;
 
     proc.once("exit", () => {
+      isHugoServerRunning = false;
+      updateHugoStatus();
       vscode.window.showInformationMessage(
         localize("info.hugoStopServer")
       );
