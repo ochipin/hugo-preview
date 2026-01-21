@@ -12,11 +12,15 @@ type Platform = "windows" | "darwin" | "linux";
 let previewPanel: vscode.WebviewPanel | undefined;
 let hugoStatusItem: vscode.StatusBarItem;
 let hugoServerProcess: ChildProcessWithoutNullStreams | null = null;
+let hugoOutput: vscode.OutputChannel;
 
 const localize = vscode.l10n.t;
 const HUGO_SERVER_URL = "http://localhost:1313";
 
 export function activate(context: vscode.ExtensionContext) {
+  hugoOutput = vscode.window.createOutputChannel("Hugo Preview");
+  context.subscriptions.push(hugoOutput);
+
   hugoStatusItem = vscode.window.createStatusBarItem(
     vscode.StatusBarAlignment.Right,
     100
@@ -98,14 +102,17 @@ async function openPreview(context: vscode.ExtensionContext) {
   fs.mkdirSync(outDir, { recursive: true });
 
   // =========================================================
-  // ★ BEST FIX: mirror "content/" relative path into temp content
+  // mirror "content/" relative path into temp content
   // =========================================================
   const contentRoot = path.join(workspace, "content");
   const docPath = doc.uri.fsPath;
 
   const norm = (p: string) => path.resolve(p);
 
-  if (!norm(docPath).startsWith(norm(contentRoot) + path.sep) && norm(docPath) !== norm(contentRoot)) {
+  if (
+    !norm(docPath).startsWith(norm(contentRoot) + path.sep) &&
+    norm(docPath) !== norm(contentRoot)
+  ) {
     throw new Error(localize("error.notContent"));
   }
 
@@ -116,10 +123,9 @@ async function openPreview(context: vscode.ExtensionContext) {
   fs.mkdirSync(path.dirname(dstMdPath), { recursive: true });
   fs.writeFileSync(dstMdPath, doc.getText(), "utf8");
 
-  // Build command:
-  // - use repo as --source so theme/config are used
-  // - override contentDir to our temp content
-  // - output to our temp public
+  // =========================================================
+  // Build (theme/config are from workspace; content is from temp)
+  // =========================================================
   await execFileAsync(hugo, [
     "--source",
     workspace,
@@ -129,17 +135,18 @@ async function openPreview(context: vscode.ExtensionContext) {
     outDir,
     "--buildDrafts",
     "--buildFuture",
-    "--buildExpired"
+    "--buildExpired",
   ]);
 
   // =========================================================
-  // ★ BEST FIX: deterministically locate the HTML for the opened md
+  // ★ FIX: ask Hugo where the HTML went (supports multilingual/permalink/bundle)
   // =========================================================
-  const slug = path.basename(relPath, ".md");
-  const sectionDir = path.dirname(relPath);
-
-  // Hugo's default: <section>/<slug>/index.html
-  const htmlPath = path.join(outDir, sectionDir, slug, "index.html");
+  const htmlPath = await resolveHtmlPathByHugoList({
+    hugo,
+    workspace,
+    outDir,
+    contentRelPath: relPath, // "guides/install.en.md" など
+  });
 
   if (!fs.existsSync(htmlPath)) {
     throw new Error(localize("error.htmlNotGenerated", htmlPath));
@@ -147,9 +154,10 @@ async function openPreview(context: vscode.ExtensionContext) {
 
   let html = fs.readFileSync(htmlPath, "utf8");
 
-  // Webview panel
+  const fileName = path.basename(relPath);
+
+  // Webview Panel
   if (!previewPanel) {
-    const fileName = path.basename(relPath);
     previewPanel = vscode.window.createWebviewPanel(
       "hugoPreview",
       fileName,
@@ -161,6 +169,7 @@ async function openPreview(context: vscode.ExtensionContext) {
     );
     previewPanel.onDidDispose(() => (previewPanel = undefined));
   } else {
+    previewPanel.title = fileName; // ★ これを必ず更新
     previewPanel.reveal(vscode.ViewColumn.Beside);
   }
 
@@ -180,7 +189,7 @@ async function openPreview(context: vscode.ExtensionContext) {
 
   previewPanel.webview.html = html;
 
-  // Auto refresh on save (optional / minimal)
+  // Auto refresh on save
   const disposable = vscode.workspace.onDidSaveTextDocument(async (saved) => {
     if (!previewPanel) {return;}
     if (saved.uri.fsPath !== doc.uri.fsPath) {return;}
@@ -215,18 +224,18 @@ function findFirstFile(dir: string, filename: string): string | null {
   return null;
 }
 
-function execFileAsync(cmd: string, args: string[]) {
-  return new Promise<void>((resolve, reject) => {
+function execFileAsync(cmd: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
     execFile(cmd, args, { maxBuffer: 1024 * 1024 * 50 }, (err, stdout, stderr) => {
       if (err) {
         reject(
           new Error(
-            `Hugo build failed.\ncmd: ${cmd} ${args.join(" ")}\n\n${stderr || stdout || err.message}`
+            `Hugo command failed.\ncmd: ${cmd} ${args.join(" ")}\n\n${stderr || stdout || err.message}`
           )
         );
         return;
       }
-      resolve();
+      resolve({ stdout, stderr });
     });
   });
 }
@@ -641,28 +650,100 @@ async function startHugoServer(context: vscode.ExtensionContext) {
 
   const hugo = await ensureHugo(context, false);
 
-  hugoServerProcess = spawn(
-    hugo,
-    ["server", "-D"],
-    {
-      cwd: workspace,
-      stdio: "pipe",
+  let logBuf = "";
+  let started = false;
+  let hasErrorLine = false;
+
+  hugoOutput.clear();
+  hugoOutput.appendLine(`[Hugo Preview] Starting hugo server...`);
+  hugoOutput.appendLine(`Command: ${hugo} server -D`);
+  hugoOutput.appendLine(`Workspace: ${workspace}`);
+  hugoOutput.appendLine("");
+
+  const onLog = (chunk: Buffer) => {
+    const msg = chunk.toString();
+    logBuf += msg;
+
+    // OutputChannel に全文出す
+    hugoOutput.append(msg);
+
+    // ERROR 判定（stdout / stderr 両対応）
+    if (
+      /^ERROR\b/m.test(msg) ||
+      /error building site/i.test(msg) ||
+      /failed to create page/i.test(msg)
+    ) {
+      hasErrorLine = true;
     }
-  );
 
-  hugoServerProcess.stdout.on("data", (d) => {
-    console.log(`[hugo] ${d}`);
-  });
+    // 起動成功判定は厳しめ
+    if (!started && /Web Server is available/i.test(msg)) {
+      started = true;
+      vscode.window.showInformationMessage(localize("info.hugoStartServer"));
+    }
+  };
 
-  hugoServerProcess.stderr.on("data", (d) => {
-    console.error(`[hugo] ${d}`);
-  });
-
-  hugoServerProcess.on("exit", () => {
+  try {
+    hugoServerProcess = spawn(
+      hugo,
+      ["server", "-D"],
+      { cwd: workspace, stdio: "pipe" }
+    );
+  } catch (e: any) {
+    vscode.window.showErrorMessage(
+      `Failed to start hugo server:\n${e?.message ?? String(e)}`
+    );
     hugoServerProcess = null;
+    return;
+  }
+
+  hugoServerProcess.stdout.on("data", onLog);
+  hugoServerProcess.stderr.on("data", onLog);
+
+  hugoServerProcess.on("error", (err) => {
+    hugoServerProcess = null;
+    hugoOutput.appendLine(`\n[process error] ${err.message}`);
+    hugoOutput.show(true);
+
+    vscode.window.showErrorMessage(
+      "Failed to launch Hugo server. See 'Hugo Preview' output for details."
+    );
   });
 
-  vscode.window.showInformationMessage(localize("info.hugoStartServer"));
+  hugoServerProcess.on("exit", (code, signal) => {
+    hugoServerProcess = null;
+
+    // exit code != 0 は無条件エラー
+    if ((code ?? 0) !== 0 || hasErrorLine) {
+      hugoOutput.appendLine("");
+      hugoOutput.appendLine(
+        `[Hugo Preview] Server exited with error (code=${code ?? "unknown"}${signal ? `, signal=${signal}` : ""})`
+      );
+      hugoOutput.show(true);
+
+      // エラー位置を要約して通知
+      const m = logBuf.match(/content\/.+\.md:\d+:\d+:[^\n]+/);
+      const summary = m ? m[0] : "See output for details.";
+
+      vscode.window.showErrorMessage(
+        `Hugo server failed: ${summary}`
+      );
+      return;
+    }
+
+    // code=0 だけど started していない → 即死
+    if (!started) {
+      hugoOutput.appendLine("");
+      hugoOutput.appendLine(
+        `[Hugo Preview] Server exited unexpectedly (code=${code ?? "unknown"})`
+      );
+      hugoOutput.show(true);
+
+      vscode.window.showErrorMessage(
+        "Hugo server exited unexpectedly. See 'Hugo Preview' output for details."
+      );
+    }
+  });
 }
 
 function stopHugoServer() {
@@ -685,4 +766,69 @@ function isHugoProject(workspace: string): boolean {
     "hugo.toml",
   ];
   return files.some(f => fs.existsSync(path.join(workspace, f)));
+}
+
+async function resolveHtmlPathByHugoList(opts: {
+  hugo: string;
+  workspace: string;
+  outDir: string;
+  contentRelPath: string; // 例: guides/install.en.md
+}): Promise<string> {
+  const { hugo, workspace, outDir, contentRelPath } = opts;
+
+  // ① hugo list all（CSV出力）
+  const { stdout } = await execFileAsync(hugo, [
+    "--source",
+    workspace,
+    "list",
+    "all",
+  ]);
+
+  const lines = stdout.trim().split("\n");
+  if (lines.length < 2) {
+    throw new Error("hugo list output is empty");
+  }
+
+  // ② ヘッダ解析
+  const headers = lines[0].split(",");
+  const idxPath = headers.indexOf("path");
+  const idxPermalink = headers.indexOf("permalink");
+
+  if (idxPath === -1 || idxPermalink === -1) {
+    throw new Error("unexpected hugo list CSV format");
+  }
+
+  const normalize = (p: string) => p.replace(/\\/g, "/");
+
+  // hugo list の path は "content/xxx.md"
+  const targetPath = normalize(`content/${contentRelPath}`);
+
+  // ③ 対象 Markdown を探す
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(",");
+
+    if (normalize(cols[idxPath]) !== targetPath) {
+      continue;
+    }
+
+    const permalink = cols[idxPermalink];
+    if (!permalink) {
+      throw new Error(`permalink missing for ${contentRelPath}`);
+    }
+
+    // ④ permalink → public 配下の HTML に変換
+    // 例: http://localhost:1313/ja/guides/install/
+    const url = new URL(permalink);
+
+    const htmlRelPath = path.join(
+      url.pathname.replace(/^\/+/, ""), // ja/guides/install/
+      "index.html"
+    );
+
+    return path.join(outDir, htmlRelPath);
+  }
+
+  throw new Error(
+    `HTML が生成されませんでした。\n対象: ${contentRelPath}\n※ 多言語 / permalink / _index.md / bundle 構成を確認してください。`
+  );
 }
