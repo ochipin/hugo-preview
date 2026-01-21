@@ -599,40 +599,68 @@ async function updateHugoStatus(context: vscode.ExtensionContext) {
 }
 
 async function showHugoQuickPick(context: vscode.ExtensionContext) {
-  const items: vscode.QuickPickItem[] = [
+  type Action = "start" | "stop" | "restart" | "open";
+
+  const items: (vscode.QuickPickItem & { action: Action })[] = [
     {
-      label: "$(play) Start Hugo server",
+      label: "$(play) " + localize("quick.start"),
       description: "hugo server",
+      action: "start",
     },
     {
-      label: "$(debug-stop) Stop Hugo server",
-      description: "stop running server",
+      label: "$(debug-stop) " + localize("quick.stop"),
+      description: localize("quick.stop.desc"),
+      action: "stop",
     },
     {
-      label: "$(globe) Open site",
+      label: "$(sync) " + localize("quick.restart"),
+      description: localize("quick.restart.desc"),
+      action: "restart",
+    },
+    {
+      label: "$(globe) " + localize("quick.open"),
       description: HUGO_SERVER_URL,
+      action: "open",
     },
   ];
 
   const selected = await vscode.window.showQuickPick(items, {
-    title: "Hugo Preview controls",
-    placeHolder: "Select action",
+    title: localize("quick.title"),
+    placeHolder: localize("quick.placeholder"),
   });
 
-  if (!selected) {return;}
+  if (!selected) {
+    return;
+  }
 
-  switch (selected.label) {
-    case "$(play) Start Hugo server":
+  switch (selected.action) {
+    case "start":
       await startHugoServer(context);
       break;
 
-    case "$(debug-stop) Stop Hugo server":
-      stopHugoServer();
+    case "stop":
+      await stopHugoServer();
       break;
 
-    case "$(globe) Open site":
+    case "restart":
+      await restartHugoServer(context);
+      break;
+
+    case "open":
       vscode.env.openExternal(vscode.Uri.parse(HUGO_SERVER_URL));
       break;
+  }
+}
+
+
+function cleanPublicDir(outDir: string) {
+  if (!fs.existsSync(outDir)) {
+    return;
+  }
+
+  for (const entry of fs.readdirSync(outDir)) {
+    const fullPath = path.join(outDir, entry);
+    fs.rmSync(fullPath, { recursive: true, force: true });
   }
 }
 
@@ -644,11 +672,23 @@ async function startHugoServer(context: vscode.ExtensionContext) {
 
   const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!workspace) {
-    vscode.window.showErrorMessage("Workspace not found.");
+    vscode.window.showErrorMessage(localize("error.noWorkspace"));
     return;
   }
 
   const hugo = await ensureHugo(context, false);
+
+  // public を掃除
+  const outDir = path.join(workspace, "public");
+  try {
+    cleanPublicDir(outDir);
+    hugoOutput.appendLine("[Hugo Preview] Cleaned public directory.");
+  } catch (e: any) {
+    vscode.window.showErrorMessage(
+      localize("error.cleanPublicFailed", e?.message ?? String(e))
+    );
+    return;
+  }
 
   let logBuf = "";
   let started = false;
@@ -664,10 +704,8 @@ async function startHugoServer(context: vscode.ExtensionContext) {
     const msg = chunk.toString();
     logBuf += msg;
 
-    // OutputChannel に全文出す
     hugoOutput.append(msg);
 
-    // ERROR 判定（stdout / stderr 両対応）
     if (
       /^ERROR\b/m.test(msg) ||
       /error building site/i.test(msg) ||
@@ -676,10 +714,11 @@ async function startHugoServer(context: vscode.ExtensionContext) {
       hasErrorLine = true;
     }
 
-    // 起動成功判定は厳しめ
     if (!started && /Web Server is available/i.test(msg)) {
       started = true;
-      vscode.window.showInformationMessage(localize("info.hugoStartServer"));
+      vscode.window.showInformationMessage(
+        localize("info.hugoStartServer")
+      );
     }
   };
 
@@ -691,7 +730,10 @@ async function startHugoServer(context: vscode.ExtensionContext) {
     );
   } catch (e: any) {
     vscode.window.showErrorMessage(
-      `Failed to start hugo server:\n${e?.message ?? String(e)}`
+      localize(
+        "error.hugoStartServerFailed",
+        e?.message ?? String(e)
+      )
     );
     hugoServerProcess = null;
     return;
@@ -706,14 +748,13 @@ async function startHugoServer(context: vscode.ExtensionContext) {
     hugoOutput.show(true);
 
     vscode.window.showErrorMessage(
-      "Failed to launch Hugo server. See 'Hugo Preview' output for details."
+      localize("error.hugoServerLaunchFailed")
     );
   });
 
   hugoServerProcess.on("exit", (code, signal) => {
     hugoServerProcess = null;
 
-    // exit code != 0 は無条件エラー
     if ((code ?? 0) !== 0 || hasErrorLine) {
       hugoOutput.appendLine("");
       hugoOutput.appendLine(
@@ -721,17 +762,15 @@ async function startHugoServer(context: vscode.ExtensionContext) {
       );
       hugoOutput.show(true);
 
-      // エラー位置を要約して通知
       const m = logBuf.match(/content\/.+\.md:\d+:\d+:[^\n]+/);
-      const summary = m ? m[0] : "See output for details.";
+      const summary = m ? m[0] : localize("error.seeOutput");
 
       vscode.window.showErrorMessage(
-        `Hugo server failed: ${summary}`
+        localize("error.hugoServerFailed", summary)
       );
       return;
     }
 
-    // code=0 だけど started していない → 即死
     if (!started) {
       hugoOutput.appendLine("");
       hugoOutput.appendLine(
@@ -740,22 +779,39 @@ async function startHugoServer(context: vscode.ExtensionContext) {
       hugoOutput.show(true);
 
       vscode.window.showErrorMessage(
-        "Hugo server exited unexpectedly. See 'Hugo Preview' output for details."
+        localize("error.hugoServerExitedUnexpectedly")
       );
     }
   });
 }
 
-function stopHugoServer() {
-  if (!hugoServerProcess) {
-    vscode.window.showInformationMessage(localize("error.hugoStopServer"));
-    return;
-  }
+function stopHugoServer(): Promise<void> {
+  return new Promise((resolve) => {
+    if (!hugoServerProcess) {
+      vscode.window.showInformationMessage(
+        localize("error.hugoStopServer")
+      );
+      resolve();
+      return;
+    }
 
-  hugoServerProcess.kill();
-  hugoServerProcess = null;
+    const proc = hugoServerProcess;
+    hugoServerProcess = null;
 
-  vscode.window.showInformationMessage(localize("info.hugoStopServer"));
+    proc.once("exit", () => {
+      vscode.window.showInformationMessage(
+        localize("info.hugoStopServer")
+      );
+      resolve();
+    });
+
+    proc.kill();
+  });
+}
+
+async function restartHugoServer(context: vscode.ExtensionContext) {
+  await stopHugoServer();
+  await startHugoServer(context);
 }
 
 function isHugoProject(workspace: string): boolean {
@@ -786,7 +842,7 @@ async function resolveHtmlPathByHugoList(opts: {
 
   const lines = stdout.trim().split("\n");
   if (lines.length < 2) {
-    throw new Error("hugo list output is empty");
+    throw new Error(localize("error.hugoListEmpty"));
   }
 
   // ② ヘッダ解析
@@ -795,12 +851,11 @@ async function resolveHtmlPathByHugoList(opts: {
   const idxPermalink = headers.indexOf("permalink");
 
   if (idxPath === -1 || idxPermalink === -1) {
-    throw new Error("unexpected hugo list CSV format");
+    throw new Error(localize("error.hugoListInvalidFormat"));
   }
 
   const normalize = (p: string) => p.replace(/\\/g, "/");
 
-  // hugo list の path は "content/xxx.md"
   const targetPath = normalize(`content/${contentRelPath}`);
 
   // ③ 対象 Markdown を探す
@@ -813,22 +868,19 @@ async function resolveHtmlPathByHugoList(opts: {
 
     const permalink = cols[idxPermalink];
     if (!permalink) {
-      throw new Error(`permalink missing for ${contentRelPath}`);
+      throw new Error(localize("error.hugoPermalinkMissing", contentRelPath));
     }
 
-    // ④ permalink → public 配下の HTML に変換
-    // 例: http://localhost:1313/ja/guides/install/
+    // ④ permalink → public 配下の HTML
     const url = new URL(permalink);
 
     const htmlRelPath = path.join(
-      url.pathname.replace(/^\/+/, ""), // ja/guides/install/
+      url.pathname.replace(/^\/+/, ""),
       "index.html"
     );
 
     return path.join(outDir, htmlRelPath);
   }
 
-  throw new Error(
-    `HTML が生成されませんでした。\n対象: ${contentRelPath}\n※ 多言語 / permalink / _index.md / bundle 構成を確認してください。`
-  );
+  throw new Error(localize("error.htmlNotGenerated", contentRelPath));
 }
