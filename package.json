@@ -16,10 +16,6 @@
     "Other"
   ],
   "activationEvents": [
-    "workspaceContains:**/config.toml",
-    "workspaceContains:**/config.yaml",
-    "workspaceContains:**/config.yml",
-    "workspaceContains:**/hugo.toml",
     "onStartupFinished"
   ],
   "l10n": "./l10n",
@@ -43,7 +39,7 @@
       "editor/title": [
         {
           "command": "hugoPreview.open",
-          "when": "resourceLangId == markdown",
+          "when": "hugoPreview.isHugoProject && resourceLangId == markdown",
           "group": "navigation"
         }
       ]

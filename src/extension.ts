@@ -38,6 +38,19 @@ export function activate(context: vscode.ExtensionContext) {
     .then(() => updateHugoStatus())
     .catch(() => {});
 
+  // 起動時に1回
+  updateHugoProjectContext().catch(() => {});
+
+  // 状態が変わるたびに更新
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      updateHugoProjectContext().catch(() => {});
+    }),
+    vscode.window.onDidChangeActiveTextEditor(() => {
+      updateHugoProjectContext().catch(() => {});
+    })
+  );
+
   context.subscriptions.push(
     vscode.commands.registerCommand("hugoPreview.open", async () => {
       try {
@@ -861,6 +874,8 @@ function isHugoProject(workspace: string): boolean {
     "config.yaml",
     "config.yml",
     "hugo.toml",
+    "hugo.yaml",
+    "hugo.yml"
   ];
   return files.some(f => fs.existsSync(path.join(workspace, f)));
 }
@@ -924,4 +939,14 @@ async function resolveHtmlPathByHugoList(opts: {
   }
 
   throw new Error(localize("error.htmlNotGenerated", contentRelPath));
+}
+
+async function updateHugoProjectContext() {
+  const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  const isHugo = !!workspace && isHugoProject(workspace);
+  await vscode.commands.executeCommand(
+    "setContext",
+    "hugoPreview.isHugoProject",
+    isHugo
+  );
 }
