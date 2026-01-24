@@ -31,13 +31,11 @@ export function activate(context: vscode.ExtensionContext) {
   hugoStatusItem.tooltip = "Hugo version used by Hugo Preview";
   context.subscriptions.push(hugoStatusItem);
 
-  // 起動時に表示更新
-  // 起動時に現在のフォルダがHugoプロジェクトかチェックして表示更新
-  const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  if (workspace && isHugoProject(workspace)) {
-    updateHugoStatus().catch(() => {});
-    checkHugoUpdateOnStartup(context).catch(() => {});
-  }
+  prependPathOnce(context);
+
+  checkHugoUpdateOnStartup(context)
+    .then(() => updateHugoStatus())
+    .catch(() => {});
 
   context.subscriptions.push(
     vscode.commands.registerCommand("hugoPreview.open", async () => {
@@ -68,14 +66,16 @@ export function activate(context: vscode.ExtensionContext) {
       await showHugoQuickPick(context);
     })
   );
-
-  // 起動時更新チェック（既存）
-  checkHugoUpdateOnStartup(context)
-    .then(() => updateHugoStatus())
-    .catch(() => {});
 }
 
 export function deactivate() {}
+
+function prependPathOnce(context: vscode.ExtensionContext) {
+  const binDir = path.join(context.globalStorageUri.fsPath, "bin");
+  const envCollection = context.environmentVariableCollection;
+  const delimiter = process.platform === "win32" ? ";" : ":";
+  envCollection.prepend('PATH', `${binDir}${delimiter}`);
+}
 
 async function openPreview(context: vscode.ExtensionContext) {
   const editor = vscode.window.activeTextEditor;

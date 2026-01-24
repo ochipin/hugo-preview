@@ -2,7 +2,7 @@
   "name": "hugo-preview",
   "displayName": "Hugo Preview",
   "description": "Hugo preview with auto-installed Hugo",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "publisher": "SuguruOchiai",
   "icon": "media/hugo-icon.png",
   "engines": {
