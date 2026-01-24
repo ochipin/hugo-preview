@@ -2,7 +2,7 @@
   "name": "hugo-preview",
   "displayName": "Hugo Preview",
   "description": "Hugo preview with auto-installed Hugo",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "publisher": "SuguruOchiai",
   "icon": "media/hugo-icon.png",
   "engines": {
@@ -54,6 +54,11 @@
           "type": "boolean",
           "default": true,
           "description": "Hugo update"
+        },
+        "hugoPreview.hugoVersion": {
+          "type": "string",
+          "default": "",
+          "description": "Pinned Hugo version (e.g. \"0.152.2\"). Empty means latest."
         },
         "hugoPreview.useExtended": {
           "type": "boolean",

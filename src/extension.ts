@@ -33,7 +33,8 @@ export function activate(context: vscode.ExtensionContext) {
 
   prependPathOnce(context);
 
-  checkHugoUpdateOnStartup(context)
+  ensurePinnedHugoOnStartup(context)
+    .then(() => checkHugoUpdateOnStartup(context))
     .then(() => updateHugoStatus())
     .catch(() => {});
 
@@ -296,6 +297,35 @@ async function ensureHugo(context: vscode.ExtensionContext, forceInstall: boolea
   }
 
   throw new Error(localize("error.installFailed"));
+}
+
+async function ensurePinnedHugoOnStartup(context: vscode.ExtensionContext) {
+  const cfg = vscode.workspace.getConfiguration("hugoPreview");
+  const pinned = (cfg.get<string>("hugoVersion") || "").trim();
+  if (!pinned) {
+    return; // ピン留めなし
+  }
+
+  const hugoPath = await resolveInstalledHugo(context);
+  if (!hugoPath) {
+    // 未インストール → 指定バージョンを入れる
+    await installHugoInternal(
+      context,
+      pinned,
+      cfg.get<boolean>("useExtended") ?? true
+    );
+    return;
+  }
+
+  const localVer = await getLocalHugoVersion(hugoPath);
+  if (!localVer || localVer !== pinned) {
+    // 不一致 → 再インストール
+    await installHugoInternal(
+      context,
+      pinned,
+      cfg.get<boolean>("useExtended") ?? true
+    );
+  }
 }
 
 function checkHugo(cmd: string): Promise<boolean> {
