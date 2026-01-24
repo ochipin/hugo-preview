@@ -220,12 +220,25 @@ async function openPreview(context: vscode.ExtensionContext) {
 }
 
 function rewriteRootPaths(html: string, rootUri: string) {
-  // Replace href="/..." src="/..." with href="{rootUri}/..."
-  // Good enough for many Hugo themes that use absolute paths.
-  return html
-    .replace(/href="\//g, `href="${rootUri}/`)
-    .replace(/src="\//g, `src="${rootUri}/`)
-    .replace(/action="\//g, `action="${rootUri}/`);
+  // src / href / action / poster / content
+  html = html.replace(
+    /\b(src|href|action|poster|content)=(["'])\/(?!\/)/gi,
+    (_m, attr, quote) => `${attr}=${quote}${rootUri}/`
+  );
+
+  // srcset="/a.png 1x, /b.png 2x"
+  html = html.replace(
+    /\bsrcset=(["'])([^"']*)\1/gi,
+    (_m, quote, value) => {
+      const nv = value.replace(
+        /(^|,\s*)\/(?!\/)/g,
+        `$1${rootUri}/`
+      );
+      return `srcset=${quote}${nv}${quote}`;
+    }
+  );
+
+  return html;
 }
 
 function findFirstFile(dir: string, filename: string): string | null {
